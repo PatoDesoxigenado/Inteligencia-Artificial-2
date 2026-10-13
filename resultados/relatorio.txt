@@ -1,0 +1,20 @@
+Acurácia Random Forest (CNN + RF): 0.791
+Acurácia Regressão Logística (baseline): 0.815
+
+Relatório do Random Forest:
+              precision    recall  f1-score   support
+
+    airplane      0.753     0.785     0.768        93
+  automobile      0.809     0.927     0.864        82
+        bird      0.755     0.612     0.676       121
+         cat      0.627     0.711     0.667        97
+        deer      0.760     0.784     0.772        97
+         dog      0.779     0.740     0.759       100
+        frog      0.817     0.876     0.846        97
+       horse      0.840     0.771     0.804       109
+        ship      0.898     0.890     0.894       109
+       truck      0.883     0.874     0.878        95
+
+    accuracy                          0.791      1000
+   macro avg      0.792     0.797     0.793      1000
+weighted avg      0.793     0.791     0.790      1000

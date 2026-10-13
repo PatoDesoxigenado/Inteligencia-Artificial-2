@@ -1,0 +1,11 @@
+# Ambiente virtual
+.venv/
+__pycache__/
+
+# Dados e artefatos gerados (não versionar)
+data/
+features/
+resultados/*.joblib
+
+# Segredos
+.env
