@@ -16,6 +16,7 @@ Pipeline:
 """
 import argparse
 import csv
+import json
 from itertools import chain, islice
 from pathlib import Path
 
@@ -28,6 +29,9 @@ from sklearn.ensemble import RandomForestRegressor
 # ----------------------------------------------------------------------------------
 VERDE, VERMELHO, AMARELO = (0, 200, 0), (0, 0, 255), (0, 220, 255)
 LARANJA, CIANO, BRANCO, PRETO = (0, 140, 255), (255, 200, 0), (255, 255, 255), (0, 0, 0)
+
+NOME_DETECTOR = {"mobilenet": "CNN MobileNet", "resnet50": "CNN ResNet50",
+                  "fundo": "subtracao de fundo", "sintetico": "ground truth"}
 
 
 def escrever(img, texto, org, escala, cor, espessura=1):
@@ -171,7 +175,7 @@ class DetectorCNN:
         self.modelo.eval().to(self.device)
         print(f"Detector: Faster R-CNN ({nome}) em {self.device}")
 
-    def __call__(self, quadro_bgr):
+    def __call__(self, quadro_bgr, i=0):
         torch = self.torch
         rgb = np.ascontiguousarray(cv2.cvtColor(quadro_bgr, cv2.COLOR_BGR2RGB))
         x = torch.from_numpy(rgb).permute(2, 0, 1).float().div(255.0).to(self.device)
@@ -194,7 +198,7 @@ class DetectorFundo:
         self.ref = np.median(np.stack(cinza), axis=0).astype(np.uint8)
         print(f"Detector: subtração de fundo (referência = {len(quadros_ref)} quadros iniciais)")
 
-    def __call__(self, quadro_bgr):
+    def __call__(self, quadro_bgr, i=0):
         h, w = quadro_bgr.shape[:2]
         k = lambda px: int(px * w / 1280) // 2 * 2 + 1  # tamanhos de kernel proporcionais à largura
         g = cv2.GaussianBlur(cv2.cvtColor(quadro_bgr, cv2.COLOR_BGR2GRAY), (7, 7), 0)
@@ -218,6 +222,42 @@ class DetectorFundo:
         return candidatos
 
 
+class DetectorSintetico:
+    """Detector 'oráculo' do vídeo sintético: devolve a caixa VERDADEIRA da pessoa
+    (ground truth). Serve para testar só o rastreio + a previsão, sem depender da CNN
+    nem de baixar pesos. As caixas vêm do CSV gerado por gerar_video_sintetico.py."""
+
+    def __init__(self, caminho_gt, caminho_meta, W, H, ruido, semente):
+        self.caixas = {}
+        with open(caminho_gt, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if int(r["visivel"]):
+                    self.caixas[int(r["quadro"])] = (float(r["x1"]), float(r["y1"]),
+                                                     float(r["x2"]), float(r["y2"]))
+        # o GT está na resolução nativa do vídeo sintético: converte para a saída
+        fx, fy = 1.0, 1.0
+        try:
+            meta = json.loads(Path(caminho_meta).read_text(encoding="utf-8"))
+            if meta.get("largura") and meta.get("altura"):
+                fx, fy = W / meta["largura"], H / meta["altura"]
+        except (OSError, ValueError):
+            pass
+        self.fx, self.fy = fx, fy
+        self.rng = np.random.default_rng(semente)
+        self.ruido = ruido
+        print(f"Detector: ground truth do vídeo sintético ({len(self.caixas)} quadros com a pessoa visível)")
+
+    def __call__(self, quadro_bgr, i=0):
+        c = self.caixas.get(i)
+        if c is None:
+            return []
+        x1, y1, x2, y2 = c
+        if self.ruido > 0:
+            j = self.rng.normal(0.0, self.ruido, 4)
+            x1, y1, x2, y2 = x1 + j[0], y1 + j[1], x2 + j[2], y2 + j[3]
+        return [((x1 * self.fx, y1 * self.fy, x2 * self.fx, y2 * self.fy), 0.99)]
+
+
 def detectar(args, fps, n, W, H):
     """Roda o detector a cada --passo quadros e segue o alvo."""
     quadros = iterar_quadros(args.video, args.largura)
@@ -225,6 +265,8 @@ def detectar(args, fps, n, W, H):
         buf = list(islice(quadros, max(5, int(args.ref_segundos * fps))))
         detector = DetectorFundo(buf)
         quadros = chain(buf, quadros)
+    elif args.detector == "sintetico":
+        detector = DetectorSintetico(args.gt, args.gt_meta, W, H, args.ruido_gt, args.semente)
     else:
         detector = DetectorCNN(args.detector, args.tamanho_deteccao, args.conf_min)
     deteccoes, info = {}, {}
@@ -236,7 +278,7 @@ def detectar(args, fps, n, W, H):
     for i, q in enumerate(quadros):
         if i % args.passo:
             continue
-        cands = detector(q)
+        cands = detector(q, i)
         escolhido = escolher_alvo(cands, ultimo, i - ultimo_i, max_perdido)
         if escolhido is not None:
             caixa, score = escolhido
@@ -447,8 +489,15 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--video", required=True)
     p.add_argument("--saida", default="resultados/video_previsao.mp4")
-    p.add_argument("--detector", default="mobilenet", choices=["mobilenet", "resnet50", "fundo"],
-                   help="mobilenet (rápido) / resnet50 (mais preciso, lento) / fundo (sem download)")
+    p.add_argument("--detector", default="mobilenet", choices=["mobilenet", "resnet50", "fundo", "sintetico"],
+                   help="mobilenet (rápido) / resnet50 (mais preciso, lento) / fundo (sem download) / "
+                        "sintetico (ground truth do vídeo sintético)")
+    p.add_argument("--gt", default="videos/video_sintetico_gt.csv",
+                   help="[sintetico] CSV com o ground truth da pessoa")
+    p.add_argument("--gt-meta", default="videos/video_sintetico_meta.json",
+                   help="[sintetico] metadados do vídeo sintético (resolução nativa)")
+    p.add_argument("--ruido-gt", type=float, default=0.0,
+                   help="[sintetico] ruído (px) adicionado às caixas do ground truth")
     p.add_argument("--passo", type=int, default=3, help="detecta a cada N quadros")
     p.add_argument("--conf-min", type=float, default=0.5, help="confiança mínima do detector")
     p.add_argument("--tamanho-deteccao", type=int, default=480, help="lado menor da imagem dentro do detector")
@@ -472,6 +521,8 @@ def main() -> None:
     p.add_argument("--mostrar-previsao", type=float, default=2.0,
                    help="dentro do vídeo, quantos s à frente desenhar a previsão (0 = não desenhar)")
     p.add_argument("--deteccoes", default="resultados/deteccoes.csv")
+    p.add_argument("--previsoes", default="",
+                   help="CSV com as previsões numéricas (vazio = usar <saida>_previsoes.csv)")
     p.add_argument("--reusar-deteccoes", action="store_true",
                    help="usa o CSV de detecções existente (pula a CNN; bom para ajustar a previsão)")
     p.add_argument("--semente", type=int, default=42)
@@ -513,6 +564,7 @@ def main() -> None:
     mostrar_s = args.mostrar_previsao
     janela_s = max(mostrar_s, 3.0)
     previsoes_t = {}
+    linhas_prev = []  # dump numérico das previsões (para conferir contra o ground truth)
     erros = {s: {"rf": [], "base": []} for s in (1.0, 2.0, 3.0)}
     ultimo_treino = -10**9
     print("Treinando o Random Forest (walk-forward, só com dados do passado)...")
@@ -530,6 +582,10 @@ def main() -> None:
         ts, cam, inc = caminho_previsto(serie, t, pr, fps, janela_s)
         cam_b = previsao_base(serie, t, fps, W, H, lags, lag_base, janela_s)
         previsoes_t[t] = (cam, inc)
+        for k in range(len(cam)):
+            linhas_prev.append([t, f"{k / fps:.3f}", t + k, f"{cam[k, 0]:.1f}", f"{cam[k, 1]:.1f}",
+                                f"{cam[k, 3]:.1f}", f"{cam_b[k, 0]:.1f}", f"{cam_b[k, 1]:.1f}",
+                                f"{cam_b[k, 3]:.1f}"])
         for s in erros:
             tf, k = t + int(round(s * fps)), int(round(s * fps))
             if tf < N and visivel[tf] and k < len(cam):
@@ -566,7 +622,15 @@ def main() -> None:
         raise SystemExit("Não consegui criar o vídeo de saída (codec mp4v indisponível?).")
     log = open(saida.with_suffix(".csv"), "w", newline="", encoding="utf-8")
     wl = csv.writer(log)
-    wl.writerow(["quadro", "tempo_s", "estado", "x_centro", "y_pes", "altura"])
+    wl.writerow(["quadro", "tempo_s", "estado", "x_centro", "y_pes", "largura", "altura"])
+
+    # Previsões em CSV (permite conferir a previsão contra o ground truth do vídeo sintético)
+    cam_prev = Path(args.previsoes) if args.previsoes else saida.with_name(saida.stem + "_previsoes.csv")
+    cam_prev.parent.mkdir(parents=True, exist_ok=True)
+    logp = open(cam_prev, "w", newline="", encoding="utf-8")
+    wp = csv.writer(logp)
+    wp.writerow(["quadro_origem", "horizonte_s", "quadro_alvo", "x_rf", "y_rf", "altura_rf",
+                  "x_base", "y_base", "altura_base"])
 
     trilha, ultimo_visto, ultimo_prev, ultimo_q = [], primeiro, None, None
     print("Gerando o vídeo de saída...")
@@ -583,7 +647,8 @@ def main() -> None:
             trilha.append(tuple(serie[i, :2]))  # trilha dos pés no chão
             caixa_translucida(img, caixa, VERDE, 0.15, 3)
             escrever(img, "pessoa", (int(caixa[0]), max(20, int(caixa[1]) - 8)), 0.6, VERDE)
-            linhas = [(f"t = {i / fps:5.1f} s  |  Estado: RASTREANDO (CNN)", VERDE)]
+            linhas = [(f"t = {i / fps:5.1f} s  |  Estado: RASTREANDO "
+                       f"({NOME_DETECTOR.get(args.detector, args.detector)})", VERDE)]
             if mostrar_s > 0 and ultimo_prev is not None and i - ultimo_prev <= 2 * args.passo:
                 cam, inc = previsoes_t[ultimo_prev]
                 n_pts = min(int(round(mostrar_s * fps)), len(cam) - 1)
@@ -616,7 +681,8 @@ def main() -> None:
         escritor.write(img)
         ok = visivel[i]
         wl.writerow([i, f"{i / fps:.2f}", estado, f"{serie[i, 0]:.1f}" if ok else "",
-                     f"{serie[i, 1]:.1f}" if ok else "", f"{serie[i, 3]:.1f}" if ok else ""])
+                     f"{serie[i, 1]:.1f}" if ok else "", f"{serie[i, 2]:.1f}" if ok else "",
+                     f"{serie[i, 3]:.1f}" if ok else ""])
 
     # trecho EXTRA: último quadro congelado + previsão animada
     n_extra = int(round(args.extra_segundos * fps))
@@ -632,6 +698,9 @@ def main() -> None:
             k = int(np.clip((N - 1 - ultimo) + e + 1, 0, len(cam_f) - 1))
             linha_pontilhada(img, cam_fb[:, :2], AMARELO, 2)
             desenhar_previsao(img, cam_f, inc_f, k, LARANJA)
+            linhas_prev.append([ultimo, f"{(N + e - ultimo) / fps:.3f}", N + e, f"{cam_f[k, 0]:.1f}",
+                                f"{cam_f[k, 1]:.1f}", f"{cam_f[k, 3]:.1f}", f"{cam_fb[k, 0]:.1f}",
+                                f"{cam_fb[k, 1]:.1f}", f"{cam_fb[k, 3]:.1f}"])
             for s in range(1, int(args.extra_segundos) + 1):  # marcadores: 1 s, 2 s... depois do fim do vídeo
                 kk = (N - 1 - ultimo) + int(round(s * fps))
                 if 0 < kk <= k and kk < len(cam_f):
@@ -646,10 +715,19 @@ def main() -> None:
 
     escritor.release()
     log.close()
+    wp.writerows(linhas_prev)
+    logp.close()
     saida.with_name(saida.stem + "_metricas.txt").write_text("\n".join(linhas_met), encoding="utf-8")
+    info = {"video": str(args.video), "largura": W, "altura": H, "fps": fps, "quadros": N,
+            "quadros_extra": n_extra, "primeiro_visivel": primeiro, "ultimo_visivel": ultimo,
+            "detector": args.detector, "extra_segundos": args.extra_segundos,
+            "deteccoes": len(deteccoes)}
+    saida.with_name(saida.stem + "_info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False),
+                                                           encoding="utf-8")
     print(f"\nPronto! {saida}  ({N / fps:.1f} s do vídeo + {args.extra_segundos:.1f} s de previsão"
           f" = {(N + n_extra) / fps:.1f} s)")
-    print(f"Log: {saida.with_suffix('.csv')}  |  Métricas: {saida.with_name(saida.stem + '_metricas.txt')}")
+    print(f"Log: {saida.with_suffix('.csv')}  |  Métricas: {saida.with_name(saida.stem + '_metricas.txt')}"
+          f"  |  Previsões: {cam_prev}")
 
 
 if __name__ == "__main__":

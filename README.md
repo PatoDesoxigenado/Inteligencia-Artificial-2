@@ -17,6 +17,8 @@ segundos extras de previsão.
 ├── extrair_features.py   # Etapa 1: baixa o CIFAR-10 e extrai features com a CNN
 ├── treinar_rf.py         # Etapa 2: treina/avalia o Random Forest (+ baseline)
 ├── processar_video.py    # Etapa 3: rastreia a pessoa, trata oclusões e prevê o caminho
+├── gerar_video_sintetico.py # Gera um vídeo SINTÉTICO (corredor) com verdade absoluta
+├── avaliar_sintetico.py  # Compara a Etapa 3 com a verdade absoluta do vídeo sintético
 ├── requirements.txt
 └── .gitignore
 ```
@@ -80,7 +82,10 @@ Na 1ª execução o `torchvision` baixa os pesos do detector (algumas dezenas de
 
 - `video_previsao.mp4` — vídeo original anotado **+ trecho extra** no final com a previsão
 - `video_previsao.csv` — estado por quadro (AGUARDANDO / RASTREANDO / OCLUSAO / PREVISAO) e posição
+- `video_previsao_previsoes.csv` — as previsões em números (posição prevista a cada quadro,
+  para conferir contra o ground truth)
 - `video_previsao_metricas.txt` — erro da previsão (em pixels) comparado ao movimento constante
+- `video_previsao_info.json` — metadados da execução (resolução, fps, quadros, detector)
 - `deteccoes.csv` — caixas encontradas pela CNN (coordenadas normalizadas; reutilizável)
 
 ### Como funciona
@@ -106,7 +111,7 @@ Na 1ª execução o `torchvision` baixa os pesos do detector (algumas dezenas de
 | Parâmetro | Padrão | Para que serve |
 |---|---|---|
 | `--extra-segundos` | 4 | Duração do trecho de previsão no fim (3 a 5 s) |
-| `--detector` | mobilenet | `mobilenet` (rápido), `resnet50` (mais preciso, lento) ou `fundo` (sem download) |
+| `--detector` | mobilenet | `mobilenet` (rápido), `resnet50` (mais preciso, lento), `fundo` (sem download) ou `sintetico` (ground truth) |
 | `--passo` | 3 | Detecta a cada N quadros (maior = mais rápido, menos amostras) |
 | `--conf-min` | 0.5 | Confiança mínima do detector |
 | `--largura` | 1280 | Largura do vídeo de saída (0 = original) |
@@ -144,11 +149,92 @@ python processar_video.py --video videos\meu_video.mp4 --detector fundo
 
 ### Onde conseguir vídeos de teste
 
+- **O vídeo sintético do próprio projeto** (próxima seção): não precisa baixar nada.
 - **Gravar o seu**: celular fixo, ~15-20 s, uma pessoa andando e passando atrás de algum obstáculo.
 - **Pexels Videos** (pexels.com/videos) e **Pixabay Videos** (pixabay.com/videos): vídeos gratuitos;
   prefira câmera fixa e uma única pessoa. Confira a licença de cada vídeo.
 - **MOTChallenge** (motchallenge.net): pedestres com muita oclusão (vêm como sequências de imagens;
   converta em vídeo com `ffmpeg`).
+
+## Exemplo sintético: um vídeo SEM filmagem real, com verdade absoluta
+
+O vídeo real depende de uma gravação e não tem resposta certa. O projeto também traz um
+**exemplo sintético**: um cenário desenhado por código (nenhuma imagem gravada) que serve
+para testar a Etapa 3 sem baixar pesos da internet e **saber se o resultado está certo**.
+
+O cenário é propositalmente diferente do vídeo real gravado: em vez da rua, a pessoa
+caminha num **corredor interno de prédio** (piso em perspectiva, portas, luminárias) e
+passa atrás de uma **pilastra**, que a esconde por completo e depois deixa só parte do
+corpo à vista.
+
+O que o gerador entrega:
+
+- `videos/video_sintetico.mp4` — o vídeo (22 s, 1280x720, 25 fps);
+- `videos/video_sintetico_gt.csv` — **ground truth por quadro**: a caixa realmente visível
+  da pessoa, a fração que está escondida (`cobertura`) e a posição verdadeira dos pés;
+- `videos/video_sintetico_meta.json` — metadados (resolução, fps, posição da pilastra, etc.).
+
+O truque do ground truth: a trajetória é uma função analítica, então o gerador também
+calcula **os segundos que ainda não existem no vídeo** (6 s à frente). Assim dá para
+conferir a previsão final ("para onde a pessoa vai") contra o que realmente aconteceu.
+
+### Como rodar
+
+```powershell
+# 1. Gera o vídeo sintético + o ground truth
+python gerar_video_sintetico.py --futuro 6
+
+# 2. Roda a Etapa 3 nele (dois modos, ambos sem baixar nada)
+
+# 2a. detector "de verdade": subtração de fundo (o pipeline acha a pessoa sozinho)
+python processar_video.py --video videos\video_sintetico.mp4 --detector fundo `
+    --saida resultados\sintetico_fundo.mp4 --deteccoes resultados\sintetico_fundo_deteccoes.csv
+
+# 2b. detector "oráculo": usa a caixa verdadeira do ground truth (isola o teste da previsão)
+python processar_video.py --video videos\video_sintetico.mp4 --detector sintetico `
+    --saida resultados\sintetico_previsao.mp4 --deteccoes resultados\sintetico_deteccoes.csv
+
+# 3. Compara tudo com a verdade absoluta
+python avaliar_sintetico.py --log resultados\sintetico_fundo.csv `
+    --previsoes resultados\sintetico_fundo_previsoes.csv --info resultados\sintetico_fundo_info.json
+```
+
+### O que a avaliação mede
+
+`avaliar_sintetico.py` confere quatro coisas e salva um relatório em
+`resultados/sintetico_avaliacao.txt`:
+
+1. **Percepção/rastreio** — IoU entre a caixa que o pipeline acompanhou e a caixa real;
+2. **Oclusão** — os intervalos em que a pessoa estava escondida de verdade contra os
+   intervalos em que o pipeline marcou `OCLUSAO` (recall/precisão);
+3. **Previsão dentro do vídeo** — erro (px) da posição prevista a 1 s, 2 s, 3 s, comparando
+   o Random Forest com o movimento constante;
+4. **Trecho extra** — erro da previsão feita no fim do vídeo contra a trajetória real dos
+   segundos seguintes (que o vídeo ainda não mostra).
+
+Resultados obtidos neste ambiente (vídeo sintético, 22 s):
+
+| Métrica | detector `fundo` | detector `sintetico` |
+|---|---|---|
+| IoU médio com a caixa real | 0.89 | 0.89 |
+| Oclusão real x detectada | 10.3–12.8 s x 10.2–12.3 s (recall 0.82) | 10.3–12.8 s x 10.2–12.8 s (recall 1.00) |
+| Erro da previsão a +3 s | RF 41 px / constante 43 px | RF 42 px / constante 45 px |
+| Erro 3 s depois do fim do vídeo | RF 6 px / constante 28 px | RF 6 px / constante 29 px |
+
+O que o exemplo mostra de forma clara: **o Random Forest aprende a curva do caminho**
+(o movimento constante erra 28 px aos 3 s do trecho extra, o RF erra 6 px), e a detecção
+de oclusão acerta bem a janela em que a pessoa está atrás da pilastra.
+
+O que ele também expõe (limitações reais do pipeline, agora mensuráveis):
+
+- o detector por subtração de fundo é **frágil à luminância**: ele separa a pessoa do
+  cenário pelo cinza, então a roupa da pessoa precisa contrastar com o fundo (no vídeo
+  sintético a camisa é escura de propósito);
+- quando a pessoa reaparece *parcialmente* atrás da pilastra, a caixa encolhe e o
+  pipeline pode marcar o trecho como oclusão antes de recuperar o alvo;
+- a previsão final erra mais à medida que o horizonte cresce (a trajetória real é uma
+  curva que o RF só "viu" por alguns segundos).
+
 
 ## Reprodutibilidade
 

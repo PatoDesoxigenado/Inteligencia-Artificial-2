@@ -1,0 +1,31 @@
+AVALIAÇÃO DA ETAPA 3 CONTRA O GROUND TRUTH DO VÍDEO SINTÉTICO
+==============================================================================
+Vídeo: videos/video_sintetico.mp4 | 550 quadros (22.0 s) | 25 fps | saída 1280x720
+Detector usado: fundo | oclusão total no GT: 62 quadros | parcial: 94 quadros
+
+1) PERCEPÇÃO E RASTREIO (a caixa do pipeline contra a caixa real)
+   IoU médio com a caixa real ............ 0.885 (mediana 0.902)
+   erro do centro da caixa ............... 8.5 px
+   quadros em que a pessoa estava visível e o pipeline perdeu a pessoa: 2
+
+2) DETECÇÃO DE OCLUSÃO
+   pessoa escondida de verdade (GT) ...... 10.3-12.8 s
+   pipeline marcou OCLUSAO ............... 10.2-12.3 s
+   recall (oculto detectado / oculto real) 0.82   precisão (real / marcado) 0.96
+
+3) PREVISÃO DENTRO DO VÍDEO (erro em px contra a posição real)
+   horizonte | Random Forest | movimento constante | amostras
+   +1 s      |         15.7     |               14.3      | 347
+   +2 s      |         27.2     |               27.2      | 309
+   +3 s      |         41.5     |               42.6      | 172
+
+4) TRECHO EXTRA (previsão depois do fim do vídeo, contra a trajetória real)
+   erro médio no trecho extra ............ RF 20.3 px | constante 21.8 px
+   erro no instante exato de cada segundo depois do fim do vídeo (RF | constante):
+     +0 s  ->      3.8 px |     3.8 px
+     +1 s  ->      4.9 px |     2.0 px
+     +2 s  ->      4.0 px |     7.5 px
+     +3 s  ->      5.8 px |    28.3 px
+
+Nota: o erro é a distância entre a posição prevista e a posição REAL dos pés
+      da pessoa (centro da caixa, base). O 'movimento constante' é o baseline.
