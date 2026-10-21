@@ -19,6 +19,15 @@ segundos extras de previsão.
 ├── processar_video.py    # Etapa 3: rastreia a pessoa, trata oclusões e prevê o caminho
 ├── gerar_video_sintetico.py # Gera um vídeo SINTÉTICO (corredor) com verdade absoluta
 ├── avaliar_sintetico.py  # Compara a Etapa 3 com a verdade absoluta do vídeo sintético
+├── cena_corredor.py      # Cena parametrizada do corredor (com GT da POSE: 13 articulações)
+├── gerar_dados_sinteticos.py # Gera o conjunto de cenas sintéticas variadas (treino/teste)
+├── extrair_pose.py       # Extrai a pose do vídeo real (MediaPipe) e salva em CSV
+├── montar_dataset.py     # Monta o dataset comum (sintético + real) em janelas
+├── modelos_temporais.py  # LSTM, GRU, EKF, Transformer temporal, T-GNN e RF
+├── treinar_modelos_seq.py# Treina os 4 modelos e salva os pesos
+├── avaliar_modelos_seq.py# Compara todos os modelos (tabela, gráficos, relatório)
+├── gerar_relatorio.py    # Gera o relatório Markdown da comparação
+├── visualizar_previsoes.py # Desenha as previsões sobre o vídeo real
 ├── requirements.txt
 └── .gitignore
 ```
@@ -234,6 +243,86 @@ O que ele também expõe (limitações reais do pipeline, agora mensuráveis):
   pipeline pode marcar o trecho como oclusão antes de recuperar o alvo;
 - a previsão final erra mais à medida que o horizonte cresce (a trajetória real é uma
   curva que o RF só "viu" por alguns segundos).
+
+---
+
+## Etapa 4 — Comparação de modelos temporais (pose sob oclusão de câmera)
+
+Esta etapa pega o problema da Etapa 3 (prever para onde a pessoa vai) e o leva para a
+**estimação de POSE**: em vez de prever só a caixa, cada modelo prevê as **13
+articulações do corpo** (cabeça, ombros, cotovelos, pulsos, quadris, joelhos,
+tornozelos) nos próximos 2 segundos, inclusive enquanto a pessoa está **escondida**.
+
+Cinco técnicas são comparadas no **mesmo protocolo**, usando **vídeo real e vídeo
+sintético** para treinar:
+
+| Modelo | Tipo | Observação |
+|---|---|---|
+| **LSTM** | rede recorrente | sequência de poses |
+| **GRU** | rede recorrente | sequência de poses |
+| **EKF** | Filtro de Kalman Estendido | **não é treinado**: modelo de processo com medição das articulações |
+| **Transformer temporal** | transformer | encoder temporal + decoder por horizonte |
+| **T-GNN** | GNN temporal (torch-geometric) | o **esqueleto é o grafo**: 13 nós, arestas = ossos |
+| Random Forest | baseline clássico | o modelo da Etapa 3, adaptado para a pose |
+| Movimento constante | baseline | sem modelo nenhum (referência) |
+
+### Como reproduzir (Windows / PowerShell)
+
+```powershell
+# 1. Gerar as 24 cenas sintéticas variadas (com GT absoluto da pose)
+python gerar_dados_sinteticos.py --cenas 24 --saida dados\sinteticos
+
+# 2. Extrair a pose do vídeo REAL (MediaPipe, CPU)
+python extrair_pose.py --video videos\meu_video.mp4 --saida dados\pose_real.csv
+
+# 3. Montar o dataset comum (sintético + real, janelas de 1 s -> 2 s)
+python montar_dataset.py --sinteticos dados\sinteticos --real dados\pose_real.csv `
+    --saida dados\dataset.npz
+
+# 4. Treinar LSTM, GRU, Transformer e T-GNN (+ RF)
+python treinar_modelos_seq.py --dataset dados\dataset.npz --saida resultados\modelos
+
+# 5. Comparar todos (incluindo o EKF, que não precisa de treino)
+python avaliar_modelos_seq.py --dataset dados\dataset.npz --modelos resultados\modelos
+
+# 6. Gerar o relatório em Markdown
+python gerar_relatorio.py
+
+# 7. (opcional) Vídeo com as previsões de cada modelo desenhadas sobre o vídeo real
+python visualizar_previsoes.py --video videos\meu_video.mp4 --modelos resultados\modelos
+```
+
+### O que é medido
+
+1. **Erro de pose por horizonte** — MAE/RMSE a 0,5 s, 1,0 s e 2,0 s, em unidades de
+   altura do corpo (comparável entre o vídeo real e o sintético) e em pixels;
+2. **Erro sob oclusão** — separado entre os quadros em que a pessoa está escondida
+   (verdade absoluta existe no sintético) e os quadros em que ela está à vista;
+3. **Erro vs. duração da oclusão** — gráfico do erro em função de quanto tempo a
+   pessoa já está escondida;
+4. **Tempo de treino** e **parâmetros** de cada modelo.
+
+### Protocolo (o que garante uma comparação justa)
+
+- a entrada é sempre a **pose observada** (com a máscara de visibilidade por
+  articulação) e a saída é a **pose futura**;
+- todos os modelos aprendem/calculam o **residual sobre a base de movimento
+  constante** (a mesma ideia do "modo residual" da Etapa 3);
+- a divisão é feita **por cena** no sintético (uma cena inteira fica num conjunto só,
+  sem vazamento) e **no tempo** no vídeo real (60% / 20% / 20%);
+- os hiperparâmetros do EKF foram ajustados no conjunto de **validação**, nunca no
+  de teste.
+
+### Saídas
+
+| Arquivo | Conteúdo |
+|---|---|
+| `resultados/RELATORIO_COMPARACAO.md` | relatório completo (gerado por `gerar_relatorio.py`) |
+| `resultados/comparacao_modelos.csv` | tabela com todas as métricas por modelo |
+| `resultados/comparacao_modelos.png` | erro de pose por horizonte |
+| `resultados/erro_vs_oclusao.png` | erro em função do tempo sob oclusão |
+| `resultados/avaliacao_modelos.txt` | resumo em texto |
+| `resultados/video_previsoes_pose.mp4` | previsões de cada modelo sobre o vídeo real |
 
 
 ## Reprodutibilidade

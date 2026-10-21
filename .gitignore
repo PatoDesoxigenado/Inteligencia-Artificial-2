@@ -9,3 +9,8 @@ resultados/*.joblib
 
 # Segredos
 .env
+
+# Etapa 4: dataset e cenas sintéticas gerados (reproduzíveis pelo script)
+dados/
+resultados/modelos/
+resultados/video_previsoes_pose.mp4

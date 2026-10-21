@@ -5,3 +5,5 @@ numpy>=1.26
 matplotlib>=3.8
 joblib>=1.3
 opencv-python>=4.9
+mediapipe>=0.10.20      # Etapa 4: extracao de pose (CPU)
+torch-geometric>=2.6    # Etapa 4: T-GNN
