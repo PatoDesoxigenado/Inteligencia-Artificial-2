@@ -290,6 +290,11 @@ python gerar_relatorio.py
 
 # 7. (opcional) Vídeo com as previsões de cada modelo desenhadas sobre o vídeo real
 python visualizar_previsoes.py --video videos\meu_video.mp4 --modelos resultados\modelos
+
+# 8. (opcional) Apresentação em PPTX com os resultados
+python gerar_graficos_slide.py --saida resultados\slide
+python gerar_slide.py --resultados resultados --graficos resultados\slide `
+    --saida resultados\apresentacao_modelos.pptx
 ```
 
 ### O que é medido
@@ -323,6 +328,8 @@ python visualizar_previsoes.py --video videos\meu_video.mp4 --modelos resultados
 | `resultados/erro_vs_oclusao.png` | erro em função do tempo sob oclusão |
 | `resultados/avaliacao_modelos.txt` | resumo em texto |
 | `resultados/video_previsoes_pose.mp4` | previsões de cada modelo sobre o vídeo real |
+| `resultados/apresentacao_modelos.pptx` | apresentação (5 slides) com os resultados |
+| `resultados/slide/` | gráficos usados na apresentação |
 
 
 ## Reprodutibilidade

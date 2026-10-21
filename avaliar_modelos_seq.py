@@ -117,6 +117,39 @@ def metricas(pred, alvo, sup, vis, ocl, escala_janela, horizonte_quadros):
     return res
 
 
+def recuperacao(pred, alvo, sup, vis, ocl, horizonte_quadros):
+    """Erro logo depois de a pessoa REAPARECER.
+
+    Para cada amostra, procura o primeiro quadro do alvo em que a pessoa voltou a
+    aparecer depois de um trecho ocluído e mede o erro ali. É a métrica de
+    "recuperação pós-oclusão": o modelo_previu bem a pose que a pessoa tinha ao
+    voltar à vista?
+    """
+    res = {}
+    for h_s, idx in horizonte_quadros.items():
+        # considera a janela de até 10 quadros em torno do horizonte
+        i0, i1 = max(0, idx - 9), min(ocl.shape[1], idx + 10)
+        d = np.sqrt(((pred[:, i0:i1] - alvo[:, i0:i1]) ** 2).sum(axis=-1))
+        vals = []
+        for n in range(len(pred)):
+            oc = ocl[n, i0:i1, 0] > 0
+            if not oc.any():
+                continue
+            ultimo_oc = int(np.where(oc)[0].max())
+            # o primeiro quadro APÓS o trecho ocluído, dentro da janela
+            cand = [k for k in range(ultimo_oc + 1, len(oc)) if not oc[k] and sup[n, i0 + k].sum() > 0]
+            if not cand:
+                continue
+            k = cand[0]
+            m = sup[n, i0 + k] > 0
+            if m.any():
+                vals.append(float(d[n, k][m].mean()))
+        if vals:
+            res[f"mae_recuperacao_{h_s}"] = float(np.mean(vals))
+            res[f"n_recuperacao_{h_s}"] = len(vals)
+    return res
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", default="dados/dataset.npz")
@@ -180,11 +213,40 @@ def main() -> None:
     # escondida quando começa a previsão
     colunas = ["modelo", "dominio", "mae_0_5s", "rmse_0_5s", "mae_1_0s", "rmse_1_0s",
                "mae_2_0s", "rmse_2_0s", "mae_visivel_2_0s", "mae_ocluido_2_0s",
-               "mae_px_0_5s", "mae_px_1_0s", "mae_px_2_0s"]
+               "mae_px_0_5s", "mae_px_1_0s", "mae_px_2_0s",
+               "mae_recuperacao_0_5s", "mae_recuperacao_1_0s", "mae_recuperacao_2_0s",
+               "n_recuperacao_0_5s", "n_recuperacao_1_0s", "n_recuperacao_2_0s"]
     # (as colunas são filtradas no final, depois de juntar as linhas por domínio)
 
     saida = Path(args.saida)
     saida.mkdir(parents=True, exist_ok=True)
+
+    # ---------------- recuperação pós-oclusão ----------------
+    for nome, pred in previsoes.items():
+        rr = recuperacao(pred, alvo, sup, vis, ocl, horizonte_quadros)
+        for l in linhas:
+            if l["modelo"] == nome and not l.get("dominio"):
+                l.update(rr)
+                break
+
+    # ---------------- curva: erro vs. duração da oclusão ----------------
+    curva = []
+    faixas = [(0.0, 0.5), (0.5, 1.0), (1.0, 1.5), (1.5, 2.0)]
+    for nome, pred in previsoes.items():
+        for lo, hi in faixas:
+            i0, i1 = int(lo * FPS), int(hi * FPS)
+            m = ((sup[:, i0:i1].mean(axis=(1, 2)) > 0) &
+                 (ocl[:, i0:i1].mean(axis=(1, 2)) > 0))
+            if m.sum() == 0:
+                curva.append({"modelo": nome, "faixa": f"{lo:.1f}-{hi:.1f}", "mae": None, "n": 0})
+                continue
+            d = np.sqrt(((pred[m][:, i0:i1] - alvo[m][:, i0:i1]) ** 2).sum(axis=-1))
+            curva.append({"modelo": nome, "faixa": f"{lo:.1f}-{hi:.1f}",
+                          "mae": float(d.mean()), "n": int(m.sum())})
+    with open(saida / "erro_vs_oclusao.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["modelo", "faixa", "mae", "n"])
+        w.writeheader()
+        w.writerows(curva)
 
     # ---------------- métricas por domínio (sintético x real) ----------------
     if origem is not None:
