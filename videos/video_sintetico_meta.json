@@ -1,0 +1,15 @@
+{
+  "cenario": "corredor interno de prédio",
+  "fps": 25,
+  "largura": 1280,
+  "altura": 720,
+  "quadros_video": 550,
+  "quadros_total": 700,
+  "duracao_video_s": 22.0,
+  "futuro_s": 6.0,
+  "horizonte": 302,
+  "t_aparece": 2.0,
+  "pilastra_x": 760.0,
+  "quadros_totalmente_ocultos": 18,
+  "quadros_parciais": 139
+}

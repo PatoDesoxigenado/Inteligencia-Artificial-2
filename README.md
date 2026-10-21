@@ -17,6 +17,17 @@ segundos extras de previsão.
 ├── extrair_features.py   # Etapa 1: baixa o CIFAR-10 e extrai features com a CNN
 ├── treinar_rf.py         # Etapa 2: treina/avalia o Random Forest (+ baseline)
 ├── processar_video.py    # Etapa 3: rastreia a pessoa, trata oclusões e prevê o caminho
+├── gerar_video_sintetico.py # Gera um vídeo SINTÉTICO (corredor) com verdade absoluta
+├── avaliar_sintetico.py  # Compara a Etapa 3 com a verdade absoluta do vídeo sintético
+├── cena_corredor.py      # Cena parametrizada do corredor (com GT da POSE: 13 articulações)
+├── gerar_dados_sinteticos.py # Gera o conjunto de cenas sintéticas variadas (treino/teste)
+├── extrair_pose.py       # Extrai a pose do vídeo real (MediaPipe) e salva em CSV
+├── montar_dataset.py     # Monta o dataset comum (sintético + real) em janelas
+├── modelos_temporais.py  # LSTM, GRU, EKF, Transformer temporal, T-GNN e RF
+├── treinar_modelos_seq.py# Treina os 4 modelos e salva os pesos
+├── avaliar_modelos_seq.py# Compara todos os modelos (tabela, gráficos, relatório)
+├── gerar_relatorio.py    # Gera o relatório Markdown da comparação
+├── visualizar_previsoes.py # Desenha as previsões sobre o vídeo real
 ├── requirements.txt
 └── .gitignore
 ```
@@ -80,7 +91,10 @@ Na 1ª execução o `torchvision` baixa os pesos do detector (algumas dezenas de
 
 - `video_previsao.mp4` — vídeo original anotado **+ trecho extra** no final com a previsão
 - `video_previsao.csv` — estado por quadro (AGUARDANDO / RASTREANDO / OCLUSAO / PREVISAO) e posição
+- `video_previsao_previsoes.csv` — as previsões em números (posição prevista a cada quadro,
+  para conferir contra o ground truth)
 - `video_previsao_metricas.txt` — erro da previsão (em pixels) comparado ao movimento constante
+- `video_previsao_info.json` — metadados da execução (resolução, fps, quadros, detector)
 - `deteccoes.csv` — caixas encontradas pela CNN (coordenadas normalizadas; reutilizável)
 
 ### Como funciona
@@ -106,7 +120,7 @@ Na 1ª execução o `torchvision` baixa os pesos do detector (algumas dezenas de
 | Parâmetro | Padrão | Para que serve |
 |---|---|---|
 | `--extra-segundos` | 4 | Duração do trecho de previsão no fim (3 a 5 s) |
-| `--detector` | mobilenet | `mobilenet` (rápido), `resnet50` (mais preciso, lento) ou `fundo` (sem download) |
+| `--detector` | mobilenet | `mobilenet` (rápido), `resnet50` (mais preciso, lento), `fundo` (sem download) ou `sintetico` (ground truth) |
 | `--passo` | 3 | Detecta a cada N quadros (maior = mais rápido, menos amostras) |
 | `--conf-min` | 0.5 | Confiança mínima do detector |
 | `--largura` | 1280 | Largura do vídeo de saída (0 = original) |
@@ -144,11 +158,179 @@ python processar_video.py --video videos\meu_video.mp4 --detector fundo
 
 ### Onde conseguir vídeos de teste
 
+- **O vídeo sintético do próprio projeto** (próxima seção): não precisa baixar nada.
 - **Gravar o seu**: celular fixo, ~15-20 s, uma pessoa andando e passando atrás de algum obstáculo.
 - **Pexels Videos** (pexels.com/videos) e **Pixabay Videos** (pixabay.com/videos): vídeos gratuitos;
   prefira câmera fixa e uma única pessoa. Confira a licença de cada vídeo.
 - **MOTChallenge** (motchallenge.net): pedestres com muita oclusão (vêm como sequências de imagens;
   converta em vídeo com `ffmpeg`).
+
+## Exemplo sintético: um vídeo SEM filmagem real, com verdade absoluta
+
+O vídeo real depende de uma gravação e não tem resposta certa. O projeto também traz um
+**exemplo sintético**: um cenário desenhado por código (nenhuma imagem gravada) que serve
+para testar a Etapa 3 sem baixar pesos da internet e **saber se o resultado está certo**.
+
+O cenário é propositalmente diferente do vídeo real gravado: em vez da rua, a pessoa
+caminha num **corredor interno de prédio** (piso em perspectiva, portas, luminárias) e
+passa atrás de uma **pilastra**, que a esconde por completo e depois deixa só parte do
+corpo à vista.
+
+O que o gerador entrega:
+
+- `videos/video_sintetico.mp4` — o vídeo (22 s, 1280x720, 25 fps);
+- `videos/video_sintetico_gt.csv` — **ground truth por quadro**: a caixa realmente visível
+  da pessoa, a fração que está escondida (`cobertura`) e a posição verdadeira dos pés;
+- `videos/video_sintetico_meta.json` — metadados (resolução, fps, posição da pilastra, etc.).
+
+O truque do ground truth: a trajetória é uma função analítica, então o gerador também
+calcula **os segundos que ainda não existem no vídeo** (6 s à frente). Assim dá para
+conferir a previsão final ("para onde a pessoa vai") contra o que realmente aconteceu.
+
+### Como rodar
+
+```powershell
+# 1. Gera o vídeo sintético + o ground truth
+python gerar_video_sintetico.py --futuro 6
+
+# 2. Roda a Etapa 3 nele (dois modos, ambos sem baixar nada)
+
+# 2a. detector "de verdade": subtração de fundo (o pipeline acha a pessoa sozinho)
+python processar_video.py --video videos\video_sintetico.mp4 --detector fundo `
+    --saida resultados\sintetico_fundo.mp4 --deteccoes resultados\sintetico_fundo_deteccoes.csv
+
+# 2b. detector "oráculo": usa a caixa verdadeira do ground truth (isola o teste da previsão)
+python processar_video.py --video videos\video_sintetico.mp4 --detector sintetico `
+    --saida resultados\sintetico_previsao.mp4 --deteccoes resultados\sintetico_deteccoes.csv
+
+# 3. Compara tudo com a verdade absoluta
+python avaliar_sintetico.py --log resultados\sintetico_fundo.csv `
+    --previsoes resultados\sintetico_fundo_previsoes.csv --info resultados\sintetico_fundo_info.json
+```
+
+### O que a avaliação mede
+
+`avaliar_sintetico.py` confere quatro coisas e salva um relatório em
+`resultados/sintetico_avaliacao.txt`:
+
+1. **Percepção/rastreio** — IoU entre a caixa que o pipeline acompanhou e a caixa real;
+2. **Oclusão** — os intervalos em que a pessoa estava escondida de verdade contra os
+   intervalos em que o pipeline marcou `OCLUSAO` (recall/precisão);
+3. **Previsão dentro do vídeo** — erro (px) da posição prevista a 1 s, 2 s, 3 s, comparando
+   o Random Forest com o movimento constante;
+4. **Trecho extra** — erro da previsão feita no fim do vídeo contra a trajetória real dos
+   segundos seguintes (que o vídeo ainda não mostra).
+
+Resultados obtidos neste ambiente (vídeo sintético, 22 s):
+
+| Métrica | detector `fundo` | detector `sintetico` |
+|---|---|---|
+| IoU médio com a caixa real | 0.89 | 0.89 |
+| Oclusão real x detectada | 10.3–12.8 s x 10.2–12.3 s (recall 0.82) | 10.3–12.8 s x 10.2–12.8 s (recall 1.00) |
+| Erro da previsão a +3 s | RF 41 px / constante 43 px | RF 42 px / constante 45 px |
+| Erro 3 s depois do fim do vídeo | RF 6 px / constante 28 px | RF 6 px / constante 29 px |
+
+O que o exemplo mostra de forma clara: **o Random Forest aprende a curva do caminho**
+(o movimento constante erra 28 px aos 3 s do trecho extra, o RF erra 6 px), e a detecção
+de oclusão acerta bem a janela em que a pessoa está atrás da pilastra.
+
+O que ele também expõe (limitações reais do pipeline, agora mensuráveis):
+
+- o detector por subtração de fundo é **frágil à luminância**: ele separa a pessoa do
+  cenário pelo cinza, então a roupa da pessoa precisa contrastar com o fundo (no vídeo
+  sintético a camisa é escura de propósito);
+- quando a pessoa reaparece *parcialmente* atrás da pilastra, a caixa encolhe e o
+  pipeline pode marcar o trecho como oclusão antes de recuperar o alvo;
+- a previsão final erra mais à medida que o horizonte cresce (a trajetória real é uma
+  curva que o RF só "viu" por alguns segundos).
+
+---
+
+## Etapa 4 — Comparação de modelos temporais (pose sob oclusão de câmera)
+
+Esta etapa pega o problema da Etapa 3 (prever para onde a pessoa vai) e o leva para a
+**estimação de POSE**: em vez de prever só a caixa, cada modelo prevê as **13
+articulações do corpo** (cabeça, ombros, cotovelos, pulsos, quadris, joelhos,
+tornozelos) nos próximos 2 segundos, inclusive enquanto a pessoa está **escondida**.
+
+Cinco técnicas são comparadas no **mesmo protocolo**, usando **vídeo real e vídeo
+sintético** para treinar:
+
+| Modelo | Tipo | Observação |
+|---|---|---|
+| **LSTM** | rede recorrente | sequência de poses |
+| **GRU** | rede recorrente | sequência de poses |
+| **EKF** | Filtro de Kalman Estendido | **não é treinado**: modelo de processo com medição das articulações |
+| **Transformer temporal** | transformer | encoder temporal + decoder por horizonte |
+| **T-GNN** | GNN temporal (torch-geometric) | o **esqueleto é o grafo**: 13 nós, arestas = ossos |
+| Random Forest | baseline clássico | o modelo da Etapa 3, adaptado para a pose |
+| Movimento constante | baseline | sem modelo nenhum (referência) |
+
+### Como reproduzir (Windows / PowerShell)
+
+```powershell
+# 1. Gerar as 24 cenas sintéticas variadas (com GT absoluto da pose)
+python gerar_dados_sinteticos.py --cenas 24 --saida dados\sinteticos
+
+# 2. Extrair a pose do vídeo REAL (MediaPipe, CPU)
+python extrair_pose.py --video videos\meu_video.mp4 --saida dados\pose_real.csv
+
+# 3. Montar o dataset comum (sintético + real, janelas de 1 s -> 2 s)
+python montar_dataset.py --sinteticos dados\sinteticos --real dados\pose_real.csv `
+    --saida dados\dataset.npz
+
+# 4. Treinar LSTM, GRU, Transformer e T-GNN (+ RF)
+python treinar_modelos_seq.py --dataset dados\dataset.npz --saida resultados\modelos
+
+# 5. Comparar todos (incluindo o EKF, que não precisa de treino)
+python avaliar_modelos_seq.py --dataset dados\dataset.npz --modelos resultados\modelos
+
+# 6. Gerar o relatório em Markdown
+python gerar_relatorio.py
+
+# 7. (opcional) Vídeo com as previsões de cada modelo desenhadas sobre o vídeo real
+python visualizar_previsoes.py --video videos\meu_video.mp4 --modelos resultados\modelos
+
+# 8. (opcional) Apresentação em PPTX com os resultados
+python gerar_graficos_slide.py --saida resultados\slide
+python gerar_slide.py --resultados resultados --graficos resultados\slide `
+    --saida resultados\apresentacao_modelos.pptx
+```
+
+### O que é medido
+
+1. **Erro de pose por horizonte** — MAE/RMSE a 0,5 s, 1,0 s e 2,0 s, em unidades de
+   altura do corpo (comparável entre o vídeo real e o sintético) e em pixels;
+2. **Erro sob oclusão** — separado entre os quadros em que a pessoa está escondida
+   (verdade absoluta existe no sintético) e os quadros em que ela está à vista;
+3. **Erro vs. duração da oclusão** — gráfico do erro em função de quanto tempo a
+   pessoa já está escondida;
+4. **Tempo de treino** e **parâmetros** de cada modelo.
+
+### Protocolo (o que garante uma comparação justa)
+
+- a entrada é sempre a **pose observada** (com a máscara de visibilidade por
+  articulação) e a saída é a **pose futura**;
+- todos os modelos aprendem/calculam o **residual sobre a base de movimento
+  constante** (a mesma ideia do "modo residual" da Etapa 3);
+- a divisão é feita **por cena** no sintético (uma cena inteira fica num conjunto só,
+  sem vazamento) e **no tempo** no vídeo real (60% / 20% / 20%);
+- os hiperparâmetros do EKF foram ajustados no conjunto de **validação**, nunca no
+  de teste.
+
+### Saídas
+
+| Arquivo | Conteúdo |
+|---|---|
+| `resultados/RELATORIO_COMPARACAO.md` | relatório completo (gerado por `gerar_relatorio.py`) |
+| `resultados/comparacao_modelos.csv` | tabela com todas as métricas por modelo |
+| `resultados/comparacao_modelos.png` | erro de pose por horizonte |
+| `resultados/erro_vs_oclusao.png` | erro em função do tempo sob oclusão |
+| `resultados/avaliacao_modelos.txt` | resumo em texto |
+| `resultados/video_previsoes_pose.mp4` | previsões de cada modelo sobre o vídeo real |
+| `resultados/apresentacao_modelos.pptx` | apresentação (5 slides) com os resultados |
+| `resultados/slide/` | gráficos usados na apresentação |
+
 
 ## Reprodutibilidade
 

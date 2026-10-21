@@ -1,0 +1,13 @@
+{
+  "video": "videos/video_sintetico.mp4",
+  "largura": 1280,
+  "altura": 720,
+  "fps": 25.0,
+  "quadros": 550,
+  "quadros_extra": 100,
+  "primeiro_visivel": 51,
+  "ultimo_visivel": 549,
+  "detector": "sintetico",
+  "extra_segundos": 4.0,
+  "deteccoes": 146
+}
